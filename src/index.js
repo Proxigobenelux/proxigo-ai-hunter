@@ -1,6 +1,7 @@
 // ─── Proxigo AI Hunter v2 — Entry Point ──────────────────────────────────────
 
 import { createClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 import { fetchTEDOpportunities }        from './sources/ted.js';
 import { fetchBelgiumRSSOpportunities } from './sources/belgium-rss.js';
 import { fetchBOAMPOpportunities }      from './sources/boamp.js';
@@ -17,7 +18,11 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  realtime: {
+    transport: WebSocket,
+  },
+});
 
 // ── Colonnes exactes de la table opportunities ────────────────────────────────
 function buildRow(opp) {
