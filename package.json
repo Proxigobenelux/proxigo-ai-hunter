@@ -1,13 +1,20 @@
 {
   "name": "proxigo-ai-hunter",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Proxigo AI Hunter — Autonomous tender collector service",
   "type": "module",
   "main": "src/index.js",
-  "scripts": { "start": "node src/index.js" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/logger.js && node --check src/sources/ted.js && node --check src/sources/boamp.js && node --check src/sources/belgium-rss.js && node --check src/sources/tendernet.js && node --check src/sources/luxembourg.js"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "node-fetch": "^3.3.2",
     "rss-parser": "^3.13.0"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }

@@ -1,3 +1,5 @@
-export function log(level, source, message, data = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level, source, message, ...data }));
+// ─── Proxigo AI Hunter — Logger ───────────────────────────────────────────────
+export function log(level, message, meta = {}) {
+  const entry = { ts: new Date().toISOString(), level, message, ...meta };
+  console.log(JSON.stringify(entry));
 }
