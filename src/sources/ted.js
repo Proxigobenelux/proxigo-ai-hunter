@@ -1,181 +1,136 @@
-// ─── Source : TED Europa v3 ───────────────────────────────────────────────────
-// Nouvel endpoint (mai 2025) : POST https://api.ted.europa.eu/v3/notices/search
-// Pas de clé API requise pour la Search API.
-// Doc : https://docs.ted.europa.eu/api/latest/index.html
+// ─── Source : TED Europa v3 ────────────────────────────────────────────────────
+// POST https://api.ted.europa.eu/v3/notices/search
+// Champs validés : query (string, format expert), fields (array), page (int), limit (int ≤250)
+// scope: 'ALL' | 'ACTIVE', paginationMode: 'PAGE_NUMBER'
+// Date format dans query : PD>=YYYYMMDD (sans tirets, sans crochets)
+// TI = objet multilangue {fra, eng, nld, ...}   CY = array ['BEL']
 
 import fetch from 'node-fetch';
 import { log } from '../logger.js';
 
 const TED_SEARCH = 'https://api.ted.europa.eu/v3/notices/search';
+const TED_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
 
 const CPV_CATEGORY = {
-  '90': 'Nettoyage',
-  '45': 'Maçonnerie / BTP',
-  '77': 'Jardinage / Espaces verts',
-  '50': 'Réparation / Maintenance',
-  '31': 'Électricité',
-  '51': 'Installation électrique',
-  '60': 'Transport / Déménagement',
-  '71': 'Architecture / Ingénierie',
-  '72': 'Informatique / IT',
-  '98': 'Services aux particuliers',
+  '90': 'Nettoyage', '45': 'Maçonnerie / BTP', '77': 'Jardinage / Espaces verts',
+  '50': 'Réparation / Maintenance', '31': 'Électricité', '51': 'Installation électrique',
+  '60': 'Transport / Déménagement', '71': 'Architecture / Ingénierie',
+  '72': 'Informatique / IT', '98': 'Services aux particuliers',
 };
 
 const KEYWORD_MAP = [
-  ['nettoyage', 'Nettoyage'], ['cleaning', 'Nettoyage'], ['entretien', 'Nettoyage'],
-  ['plomberie', 'Plomberie'], ['sanitaire', 'Plomberie'],
-  ['jardinage', 'Jardinage / Espaces verts'], ['espaces verts', 'Jardinage / Espaces verts'],
-  ['électric', 'Électricité'], ['electric', 'Électricité'],
-  ['maçonnerie', 'Maçonnerie / BTP'], ['construction', 'Maçonnerie / BTP'], ['travaux', 'Maçonnerie / BTP'],
-  ['transport', 'Transport / Déménagement'], ['déménagement', 'Transport / Déménagement'],
-  ['informatique', 'Informatique / IT'],
-  ['maintenance', 'Réparation / Maintenance'],
+  ['nettoyage','Nettoyage'], ['cleaning','Nettoyage'], ['entretien','Nettoyage'],
+  ['plomberie','Plomberie'], ['sanitaire','Plomberie'],
+  ['jardinage','Jardinage / Espaces verts'], ['espaces verts','Jardinage / Espaces verts'],
+  ['électric','Électricité'], ['electric','Électricité'],
+  ['maçonnerie','Maçonnerie / BTP'], ['construction','Maçonnerie / BTP'], ['travaux','Maçonnerie / BTP'],
+  ['transport','Transport / Déménagement'], ['déménagement','Transport / Déménagement'],
+  ['informatique','Informatique / IT'], ['maintenance','Réparation / Maintenance'],
 ];
+
+/** YYYYMMDD sans tirets — format requis par l'expert query TED */
+function yyyymmdd(d = new Date()) {
+  return d.toISOString().split('T')[0].replace(/-/g, '');
+}
 
 function guessCategory(cpvCodes = [], title = '') {
   for (const code of cpvCodes) {
-    const prefix = String(code).substring(0, 2);
-    if (CPV_CATEGORY[prefix]) return CPV_CATEGORY[prefix];
+    const p = String(code).substring(0, 2);
+    if (CPV_CATEGORY[p]) return CPV_CATEGORY[p];
   }
   const lower = title.toLowerCase();
-  for (const [kw, cat] of KEYWORD_MAP) {
-    if (lower.includes(kw)) return cat;
-  }
+  for (const [kw, cat] of KEYWORD_MAP) if (lower.includes(kw)) return cat;
   return 'Services généraux';
 }
 
 function safeDate(val) {
   if (!val) return null;
-  try {
-    const d = new Date(String(val).length === 8 ? `${val.substring(0,4)}-${val.substring(4,6)}-${val.substring(6,8)}` : val);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  } catch { return null; }
+  try { const d = new Date(String(val)); return isNaN(d.getTime()) ? null : d.toISOString(); }
+  catch { return null; }
+}
+
+function extractTitle(ti) {
+  if (!ti) return null;
+  if (typeof ti === 'string') return ti;
+  if (Array.isArray(ti)) return ti[0] ?? null;
+  return ti.fra ?? ti.fre ?? ti.eng ?? ti.nld ?? ti.deu ?? Object.values(ti)[0] ?? null;
+}
+
+async function tedPost(query, limit = 50) {
+  const body = {
+    query,
+    fields: ['ND', 'TI', 'CY', 'PC', 'PD'],
+    page: 1,
+    limit,
+    scope: 'ALL',
+    paginationMode: 'PAGE_NUMBER',
+    onlyLatestVersions: false,
+  };
+  const res = await fetch(TED_SEARCH, {
+    method: 'POST',
+    headers: TED_HEADERS,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) {
+    const msg = await res.text();
+    throw new Error(`TED HTTP ${res.status}: ${msg.substring(0, 200)}`);
+  }
+  return res.json();
 }
 
 export async function fetchTEDOpportunities() {
-  // L'API v3 utilise POST avec un body JSON
-  const body = {
-    query: 'BT-09(b)-Procedure in (BEL, FRA, LUX, NLD)',
-    fields: ['ND', 'TI', 'AC', 'CY', 'DD', 'TVH', 'PC'],
-    page: 1,
-    pageSize: 50,
-    onlyLatestVersions: true,
-  };
+  const since = yyyymmdd(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const query = `(CY=BEL OR CY=FRA OR CY=LUX OR CY=NLD) AND PD>=${since}`;
 
-  log('info', '[TED] Appel API v3 (POST)', { url: TED_SEARCH });
-
-  let res;
-  try {
-    res = await fetch(TED_SEARCH, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch (err) {
-    log('error', '[TED] Erreur réseau', { error: err.message });
-    return [];
-  }
-
-  log('info', '[TED] Réponse HTTP', { status: res.status, contentType: res.headers.get('content-type') });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    log('error', '[TED] HTTP non-OK', { status: res.status, body: errBody.substring(0, 400) });
-    // Fallback : essayer la requête simplifiée sans filtre pays
-    return fetchTEDFallback();
-  }
-
-  const raw = await res.text();
-  if (!raw || raw.trim().length === 0) {
-    log('error', '[TED] Réponse vide');
-    return fetchTEDFallback();
-  }
+  log('info', '[TED] Appel API v3', { query });
 
   let data;
   try {
-    data = JSON.parse(raw);
-  } catch (e) {
-    log('error', '[TED] JSON invalide', { preview: raw.substring(0, 300), error: e.message });
-    return [];
+    data = await tedPost(query, 50);
+  } catch (err) {
+    log('error', '[TED] Erreur principale', { error: err.message });
+    // Fallback : sans filtre date
+    try {
+      data = await tedPost('CY=BEL OR CY=FRA OR CY=LUX OR CY=NLD', 30);
+      log('info', '[TED] Fallback sans filtre date');
+    } catch (err2) {
+      log('error', '[TED] Fallback échoué', { error: err2.message });
+      return [];
+    }
   }
 
-  const notices = data.notices ?? data.results ?? data.data ?? [];
-  log('info', '[TED] Notices trouvées', { count: notices.length, total: data.totalNoticeCount ?? '?' });
-
+  const notices = data.notices ?? [];
+  log('info', '[TED] Notices', { count: notices.length, total: data.totalNoticeCount ?? '?' });
   return mapNotices(notices, 'ted');
 }
 
-// Fallback : requête simplifiée si le filtre pays échoue
-async function fetchTEDFallback() {
-  const body = {
-    query: 'PD=[20240101,20991231]',
-    fields: ['ND', 'TI', 'AC', 'CY', 'DD', 'TVH', 'PC'],
-    page: 1,
-    pageSize: 50,
-    onlyLatestVersions: true,
-  };
-
-  log('info', '[TED] Fallback sans filtre pays', { url: TED_SEARCH });
-
-  try {
-    const res = await fetch(TED_SEARCH, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!res.ok) {
-      log('error', '[TED] Fallback aussi échoué', { status: res.status });
-      return [];
-    }
-
-    const data = await res.json();
-    const notices = data.notices ?? data.results ?? [];
-    log('info', '[TED] Notices fallback', { count: notices.length });
-    return mapNotices(notices, 'ted-fb');
-  } catch (err) {
-    log('error', '[TED] Fallback exception', { error: err.message });
-    return [];
-  }
-}
-
 function mapNotices(notices, prefix) {
+  const COUNTRY_MAP = { BEL: 'BE', FRA: 'FR', LUX: 'LU', NLD: 'NL' };
   const results = [];
   for (const n of notices) {
-    const id = n.ND?.[0] ?? n.noticePublicationId ?? n.id;
+    const id = n.ND ?? n['publication-number'];
     if (!id) continue;
-
-    const titleRaw = n.TI?.[0] ?? n.title ?? "Appel d'offres TED";
-    const country  = (n.CY?.[0] ?? n.PC?.[0] ?? 'EU').toUpperCase().substring(0, 2);
+    const titleRaw = extractTitle(n.TI) ?? "Appel d'offres TED";
+    const cyRaw    = Array.isArray(n.CY) ? n.CY[0] : (n.CY ?? 'EU');
+    const country  = COUNTRY_MAP[String(cyRaw).toUpperCase()] ?? String(cyRaw).substring(0, 2);
     const cpvCodes = Array.isArray(n.PC) ? n.PC : [];
-    const budget   = n.TVH?.[0] ?? null;
-
     results.push({
       external_id:     `${prefix}-${id}`,
       title:           String(titleRaw).substring(0, 500),
-      description:     n.AC?.[0] ? String(n.AC[0]).substring(0, 2000) : null,
+      description:     null,
       source_name:     'TED Europa',
-      source_url:      `https://ted.europa.eu/en/notice/-/detail/${id}`,
-      organism:        n.AC?.[0] ? String(n.AC[0]).substring(0, 255) : null,
+      source_url:      `https://ted.europa.eu/en/notice/${id}/html`,
+      organism:        null,
       category:        guessCategory(cpvCodes, titleRaw),
       country,
       city:            null,
       postal_code:     null,
       budget_min:      null,
-      budget_max:      budget ? parseFloat(budget) : null,
+      budget_max:      null,
       budget_currency: 'EUR',
-      deadline:        safeDate(n.DD?.[0]),
-      published_at:    new Date().toISOString(),
+      deadline:        null,
+      published_at:    safeDate(n.PD) ?? new Date().toISOString(),
       type:            'public',
       status:          'active',
       documents:       [],
