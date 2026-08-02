@@ -1,11 +1,11 @@
 // ─── Source : e-Procurement Belgique ─────────────────────────────────────────
-// Le RSS publicprocurement.be retourne du XML malformé — on utilise à la place
-// l'API TED v3.0 filtrée sur le pays BE (JSON propre, même données).
+// Utilise TED API v3 (POST) filtrée sur BT-09(b)-Procedure = BEL
+// Le RSS publicprocurement.be retourne du XML malformé — abandonné.
 
 import fetch from 'node-fetch';
 import { log } from '../logger.js';
 
-const TED_BE = 'https://ted.europa.eu/api/v3.0/notices/search?fields=ND,TI,AC,CY,DD,TVH&q=CY%3ABE&pageSize=50&page=1';
+const TED_SEARCH = 'https://api.ted.europa.eu/v3/notices/search';
 
 const KEYWORD_MAP = [
   ['nettoyage', 'Nettoyage'], ['cleaning', 'Nettoyage'], ['entretien', 'Nettoyage'],
@@ -30,25 +30,33 @@ function guessCategory(text = '') {
 function safeDate(val) {
   if (!val) return null;
   try {
-    const d = new Date(val);
-    if (isNaN(d.getTime())) return null;
-    return d.toISOString();
-  } catch {
-    return null;
-  }
+    const d = new Date(String(val).length === 8 ? `${val.substring(0,4)}-${val.substring(4,6)}-${val.substring(6,8)}` : val);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  } catch { return null; }
 }
 
 export async function fetchBelgiumRSSOpportunities() {
-  log('info', '[Belgique] Appel TED API filtré BE', { url: TED_BE });
+  const body = {
+    query: 'BT-09(b)-Procedure=BEL',
+    fields: ['ND', 'TI', 'AC', 'CY', 'DD', 'TVH', 'PC'],
+    page: 1,
+    pageSize: 50,
+    onlyLatestVersions: true,
+  };
+
+  log('info', '[Belgique] Appel TED API v3/BE (POST)', { url: TED_SEARCH });
 
   let res;
   try {
-    res = await fetch(TED_BE, {
+    res = await fetch(TED_SEARCH, {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         'Accept': 'application/json',
         'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
       },
-      signal: AbortSignal.timeout(25000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
     });
   } catch (err) {
     log('error', '[Belgique] Erreur réseau', { error: err.message });
@@ -58,8 +66,8 @@ export async function fetchBelgiumRSSOpportunities() {
   log('info', '[Belgique] Réponse HTTP', { status: res.status, contentType: res.headers.get('content-type') });
 
   if (!res.ok) {
-    const body = await res.text();
-    log('error', '[Belgique] HTTP non-OK', { status: res.status, body: body.substring(0, 300) });
+    const errBody = await res.text();
+    log('error', '[Belgique] HTTP non-OK', { status: res.status, body: errBody.substring(0, 400) });
     return [];
   }
 
@@ -72,8 +80,8 @@ export async function fetchBelgiumRSSOpportunities() {
   let data;
   try {
     data = JSON.parse(raw);
-  } catch (parseErr) {
-    log('error', '[Belgique] JSON invalide', { preview: raw.substring(0, 300), error: parseErr.message });
+  } catch (e) {
+    log('error', '[Belgique] JSON invalide', { preview: raw.substring(0, 300), error: e.message });
     return [];
   }
 
@@ -84,7 +92,6 @@ export async function fetchBelgiumRSSOpportunities() {
   for (const n of notices) {
     const id = n.ND?.[0] ?? n.id;
     if (!id) continue;
-
     const titleRaw = n.TI?.[0] ?? 'Marché public Belgique';
     const budget   = n.TVH?.[0] ?? null;
 
@@ -93,7 +100,7 @@ export async function fetchBelgiumRSSOpportunities() {
       title:           String(titleRaw).substring(0, 500),
       description:     n.AC?.[0] ? String(n.AC[0]).substring(0, 2000) : null,
       source_name:     'e-Procurement Belgique',
-      source_url:      `https://ted.europa.eu/udl?uri=TED:NOTICE:${id}:TEXT:FR:HTML`,
+      source_url:      `https://ted.europa.eu/en/notice/-/detail/${id}`,
       organism:        n.AC?.[0] ? String(n.AC[0]).substring(0, 255) : null,
       category:        guessCategory(titleRaw),
       country:         'BE',

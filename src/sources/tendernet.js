@@ -1,10 +1,15 @@
 // ─── Source : TenderNed (Pays-Bas) ────────────────────────────────────────────
-// API REST publique — structure de réponse 2024 couvrant toutes les variantes.
+// L'API REST publique /api/publieksportaal/ est morte (404 / auth requise).
+// Nouvelle stratégie : RSS via data.overheid.nl + TED API v3 filtrée NLD.
 
 import fetch from 'node-fetch';
+import Parser from 'rss-parser';
 import { log } from '../logger.js';
 
-const TENDERNET_BASE = 'https://www.tenderned.nl/api/publieksportaal/aanbestedingen';
+// RSS officiel fourni par data.overheid.nl pour TenderNed
+const TENDERNED_RSS = 'https://data.overheid.nl/feeds/tenderned.rss';
+// TED API v3 comme complément pour les marchés NL publiés sur TED
+const TED_SEARCH    = 'https://api.ted.europa.eu/v3/notices/search';
 
 const KEYWORD_MAP = [
   ['schoonmaak', 'Nettoyage'], ['reiniging', 'Nettoyage'], ['nettoyage', 'Nettoyage'],
@@ -30,100 +35,116 @@ function safeDate(val) {
   if (!val) return null;
   try {
     const d = new Date(val);
-    if (isNaN(d.getTime())) return null;
-    return d.toISOString();
-  } catch {
-    return null;
-  }
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  } catch { return null; }
 }
 
 export async function fetchTenderNedOpportunities() {
-  const url = `${TENDERNET_BASE}?page=0&size=50&sort=publicatieDatum,desc`;
-  log('info', '[TenderNed] Appel API', { url });
-
-  let res;
-  try {
-    res = await fetch(url, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
-        'Accept-Language': 'nl,fr;q=0.8',
-      },
-      signal: AbortSignal.timeout(25000),
-    });
-  } catch (err) {
-    log('error', '[TenderNed] Erreur réseau', { error: err.message });
-    return [];
-  }
-
-  log('info', '[TenderNed] Réponse HTTP', { status: res.status, contentType: res.headers.get('content-type') });
-
-  if (!res.ok) {
-    const body = await res.text();
-    log('error', '[TenderNed] HTTP non-OK', { status: res.status, body: body.substring(0, 400) });
-    return [];
-  }
-
-  const raw = await res.text();
-  if (!raw || raw.trim().length === 0) {
-    log('error', '[TenderNed] Réponse vide');
-    return [];
-  }
-
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch (parseErr) {
-    log('error', '[TenderNed] JSON invalide', { preview: raw.substring(0, 300), error: parseErr.message });
-    return [];
-  }
-
-  // Couvre toutes les structures connues de l'API TenderNed
-  let items = [];
-  if (Array.isArray(data)) {
-    items = data;
-  } else if (Array.isArray(data.content)) {
-    items = data.content;
-  } else if (Array.isArray(data._embedded?.aanbestedingen)) {
-    items = data._embedded.aanbestedingen;
-  } else if (Array.isArray(data.aanbestedingen)) {
-    items = data.aanbestedingen;
-  } else if (Array.isArray(data.results)) {
-    items = data.results;
-  }
-
-  log('info', '[TenderNed] Items trouvés', { count: items.length, topLevelKeys: Object.keys(data).join(',') });
-
   const results = [];
-  for (const item of items) {
-    const id = item.id ?? item.aanbestedingId ?? item.publicatieId;
-    if (!id) continue;
 
-    const title       = item.naam ?? item.titel ?? item.omschrijving ?? 'Aanbesteding NL';
-    const description = item.omschrijving ?? item.opdrachtomschrijving ?? '';
-    const city        = item.plaatsVanUitvoering ?? item.opdrachtgeverPlaats ?? item.stad ?? '';
-
-    results.push({
-      external_id:     `nl-${id}`,
-      title:           String(title).substring(0, 500),
-      description:     String(description).substring(0, 2000),
-      source_name:     'TenderNed (NL)',
-      source_url:      `https://www.tenderned.nl/aankondigingen/overzicht/${id}`,
-      organism:        item.aanbestedendeDienst ?? item.opdrachtgever ?? null,
-      category:        guessCategory(`${title} ${description}`),
-      country:         'NL',
-      city:            String(city).substring(0, 100),
-      postal_code:     null,
-      budget_min:      null,
-      budget_max:      item.budgetTo ?? item.raming ?? item.geraamdeWaarde ?? null,
-      budget_currency: 'EUR',
-      deadline:        safeDate(item.inschrijvenTot ?? item.sluitingsDatum ?? item.sluitingsDate),
-      published_at:    safeDate(item.publicatieDatum ?? item.datumPublicatie) ?? new Date().toISOString(),
-      type:            'public',
-      status:          'active',
-      documents:       [],
-      tags:            [],
+  // ── Stratégie 1 : RSS data.overheid.nl ───────────────────────────────────
+  log('info', '[TenderNed] Appel RSS data.overheid.nl', { url: TENDERNED_RSS });
+  try {
+    const parser = new Parser({
+      timeout: 25000,
+      headers: { 'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)' },
     });
+    const feed = await parser.parseURL(TENDERNED_RSS);
+    const items = feed.items ?? [];
+    log('info', '[TenderNed] Items RSS trouvés', { count: items.length });
+
+    for (const item of items) {
+      const id = item.guid ?? item.link;
+      if (!id) continue;
+      const title       = item.title ?? 'Aanbesteding NL';
+      const description = item.contentSnippet ?? item.content ?? '';
+
+      results.push({
+        external_id:     `nl-rss-${Buffer.from(String(id)).toString('base64').substring(0, 60)}`,
+        title:           String(title).substring(0, 500),
+        description:     String(description).substring(0, 2000),
+        source_name:     'TenderNed (NL)',
+        source_url:      item.link ?? 'https://www.tenderned.nl',
+        organism:        null,
+        category:        guessCategory(`${title} ${description}`),
+        country:         'NL',
+        city:            null,
+        postal_code:     null,
+        budget_min:      null,
+        budget_max:      null,
+        budget_currency: 'EUR',
+        deadline:        null,
+        published_at:    safeDate(item.pubDate) ?? new Date().toISOString(),
+        type:            'public',
+        status:          'active',
+        documents:       [],
+        tags:            [],
+      });
+    }
+  } catch (err) {
+    log('warn', '[TenderNed] RSS échoué, passage à TED API NLD', { error: err.message });
+  }
+
+  // ── Stratégie 2 : TED API v3 filtrée NLD ─────────────────────────────────
+  if (results.length === 0) {
+    log('info', '[TenderNed] Fallback TED API v3 NLD', { url: TED_SEARCH });
+    try {
+      const body = {
+        query: 'BT-09(b)-Procedure=NLD',
+        fields: ['ND', 'TI', 'AC', 'CY', 'DD', 'TVH'],
+        page: 1,
+        pageSize: 30,
+        onlyLatestVersions: true,
+      };
+
+      const res = await fetch(TED_SEARCH, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      log('info', '[TenderNed] TED/NLD Réponse HTTP', { status: res.status });
+
+      if (res.ok) {
+        const data = await res.json();
+        const notices = data.notices ?? data.results ?? [];
+        log('info', '[TenderNed] Notices TED/NLD', { count: notices.length });
+
+        for (const n of notices) {
+          const id = n.ND?.[0] ?? n.id;
+          if (!id) continue;
+          const titleRaw = n.TI?.[0] ?? 'Aanbesteding NL';
+          results.push({
+            external_id:     `nl-ted-${id}`,
+            title:           String(titleRaw).substring(0, 500),
+            description:     n.AC?.[0] ? String(n.AC[0]).substring(0, 2000) : null,
+            source_name:     'TenderNed (NL)',
+            source_url:      `https://ted.europa.eu/en/notice/-/detail/${id}`,
+            organism:        n.AC?.[0] ? String(n.AC[0]).substring(0, 255) : null,
+            category:        guessCategory(titleRaw),
+            country:         'NL',
+            city:            null,
+            postal_code:     null,
+            budget_min:      null,
+            budget_max:      n.TVH?.[0] ? parseFloat(n.TVH[0]) : null,
+            budget_currency: 'EUR',
+            deadline:        safeDate(n.DD?.[0]),
+            published_at:    new Date().toISOString(),
+            type:            'public',
+            status:          'active',
+            documents:       [],
+            tags:            [],
+          });
+        }
+      }
+    } catch (err) {
+      log('error', '[TenderNed] TED/NLD fallback échoué', { error: err.message });
+    }
   }
 
   log('info', '[TenderNed] Opportunités construites', { count: results.length });

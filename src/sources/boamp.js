@@ -1,11 +1,12 @@
 // ─── Source : BOAMP France ────────────────────────────────────────────────────
-// API OpenDataSoft — dataset "boamp" sur boamp-datadila.opendatasoft.com
+// API OpenDataSoft hébergée sur www.boamp.fr (pas boamp-datadila.opendatasoft.com)
 // Filtre : famille AAPC (Avis d'Appel à la Concurrence), dernières 72h
+// Doc : https://www.boamp.fr/api-console/explore/v2.1/
 
 import fetch from 'node-fetch';
 import { log } from '../logger.js';
 
-const BOAMP_API = 'https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records';
+const BOAMP_API = 'https://www.boamp.fr/api/explore/v2.1/catalog/datasets/boamp/records';
 
 const KEYWORD_MAP = [
   ['nettoyage', 'Nettoyage'], ['entretien', 'Nettoyage'], ['propreté', 'Nettoyage'], ['désinfection', 'Nettoyage'],
@@ -42,13 +43,14 @@ function safeDate(val) {
 export async function fetchBOAMPOpportunities() {
   const since = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-  // Paramètres encodés manuellement pour éviter les doubles-encodages
+  // ODSQL : guillemets simples autour des valeurs string, date() pour les dates
   const params = new URLSearchParams();
   params.set('select', 'idweb,objet,acheteur_nom,acheteur_ville,cpv,montant,date_limite_reponse,url_avis,date_publication,descripteur_libelle,famille');
-  params.set('where', `date_publication >= date'${since}' AND famille = 'AAPC'`);
+  params.set('where', `date_publication >= date'${since}' AND famille='AAPC'`);
   params.set('order_by', 'date_publication DESC');
   params.set('limit', '100');
   params.set('timezone', 'UTC');
+  params.set('lang', 'fr');
 
   const url = `${BOAMP_API}?${params.toString()}`;
   log('info', '[BOAMP] Appel API', { url });
@@ -60,7 +62,7 @@ export async function fetchBOAMPOpportunities() {
         'Accept': 'application/json',
         'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
       },
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(30000),
     });
   } catch (err) {
     log('error', '[BOAMP] Erreur réseau', { error: err.message });
@@ -70,9 +72,11 @@ export async function fetchBOAMPOpportunities() {
   log('info', '[BOAMP] Réponse HTTP', { status: res.status, contentType: res.headers.get('content-type') });
 
   if (!res.ok) {
-    const body = await res.text();
-    log('error', '[BOAMP] HTTP non-OK', { status: res.status, body: body.substring(0, 400) });
-    return [];
+    const errBody = await res.text();
+    log('error', '[BOAMP] HTTP non-OK', { status: res.status, body: errBody.substring(0, 400) });
+
+    // Fallback : sans filtre famille pour voir si l'API répond
+    return fetchBOAMPFallback(since);
   }
 
   const raw = await res.text();
@@ -84,14 +88,54 @@ export async function fetchBOAMPOpportunities() {
   let data;
   try {
     data = JSON.parse(raw);
-  } catch (parseErr) {
-    log('error', '[BOAMP] JSON invalide', { preview: raw.substring(0, 300), error: parseErr.message });
+  } catch (e) {
+    log('error', '[BOAMP] JSON invalide', { preview: raw.substring(0, 300), error: e.message });
     return [];
   }
 
   const records = data.results ?? data.records ?? [];
   log('info', '[BOAMP] Records trouvés', { count: records.length, total: data.total_count ?? '?' });
 
+  return mapBoampRecords(records);
+}
+
+// Fallback sans filtre famille (diagnose si le problème vient du where)
+async function fetchBOAMPFallback(since) {
+  const params = new URLSearchParams();
+  params.set('select', 'idweb,objet,acheteur_nom,acheteur_ville,cpv,montant,date_limite_reponse,url_avis,date_publication,descripteur_libelle');
+  params.set('where', `date_publication >= date'${since}'`);
+  params.set('order_by', 'date_publication DESC');
+  params.set('limit', '50');
+  params.set('timezone', 'UTC');
+
+  const url = `${BOAMP_API}?${params.toString()}`;
+  log('info', '[BOAMP] Fallback sans filtre famille', { url });
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Proxigo-AI-Hunter/2.0 (contact@proxigo.eu)',
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      log('error', '[BOAMP] Fallback HTTP non-OK', { status: res.status });
+      return [];
+    }
+
+    const data = await res.json();
+    const records = data.results ?? data.records ?? [];
+    log('info', '[BOAMP] Fallback records', { count: records.length });
+    return mapBoampRecords(records);
+  } catch (err) {
+    log('error', '[BOAMP] Fallback exception', { error: err.message });
+    return [];
+  }
+}
+
+function mapBoampRecords(records) {
   const results = [];
   for (const f of records) {
     if (!f.idweb || !f.objet) continue;
