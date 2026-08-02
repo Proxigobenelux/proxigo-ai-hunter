@@ -63,11 +63,10 @@ async function insertOpportunities(opps) {
         if (error.code === '23505') {
           skipped++;
         } else {
-          log('error', '[DB] Erreur insertion', {
-            id:   opp.external_id,
-            code: error.code,
-            msg:  error.message,
-          });
+          log(
+            'error',
+            `[DB] Erreur insertion | id=${opp.external_id} | code=${error.code ?? 'inconnu'} | message=${error.message ?? 'inconnu'} | details=${error.details ?? ''} | hint=${error.hint ?? ''}`
+          );
           errors++;
         }
       } else {
