@@ -289,7 +289,7 @@ async function tedPost(query, limit = 50) {
   const body = {
     query,
     fields: [
-      fields: [
+      
   'publication-number',
   'notice-title',
   'buyer-name',
@@ -303,7 +303,7 @@ async function tedPost(query, limit = 50) {
   'notice-type',
   'publication-date',
 ],
-    ],
+    
     page: 1,
     limit,
     scope: 'ALL',
