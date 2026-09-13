@@ -57,7 +57,9 @@ async function insertOpportunities(opps) {
   for (const opp of opps) {
     try {
       const row = buildRow(opp);
-      const { error } = await supabase.from('opportunities').insert(row);
+      const { error } = await supabase
+  .from('opportunities')
+  .upsert(row, { onConflict: 'external_id' });
 
       if (error) {
         if (error.code === '23505') {
