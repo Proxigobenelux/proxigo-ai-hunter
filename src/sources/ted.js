@@ -189,11 +189,24 @@ function extractCpvCodes(notice) {
 }
 
 function extractDeadline(notice) {
-  return safeDate(
-    notice.deadline ??
-    notice['deadline-date'] ??
-    notice.DD
-  );
+  const date = extractValue(
+  notice['deadline-receipt-tender-date-lot'] ??
+  notice['deadline-date-lot'] ??
+  notice.deadline ??
+  notice['deadline-date'] ??
+  notice.DD
+);
+
+const time = extractValue(
+  notice['deadline-receipt-tender-time-lot'] ??
+  notice['deadline-time-lot']
+);
+
+  if (date && time) {
+    return safeDate(`${date}T${time}`);
+  }
+
+  return safeDate(date);
 }
 
 function extractPublicationDate(notice) {
@@ -209,7 +222,12 @@ function extractPublicationNumber(notice) {
     notice.ND
   );
 }
-
+function extractFormType(notice) {
+  return extractValue(
+    notice['form-type'] ??
+    notice['form-type-code']
+  );
+}
 function extractBudget(notice) {
   const value =
     notice['total-value'] ??
@@ -271,14 +289,20 @@ async function tedPost(query, limit = 50) {
   const body = {
     query,
     fields: [
-      'publication-number',
-      'notice-title',
-      'buyer-name',
-      'buyer-country',
-      'classification-cpv',
-      'total-value',
-      'deadline',
-      'publication-date',
+      fields: [
+  'publication-number',
+  'notice-title',
+  'buyer-name',
+  'buyer-country',
+  'classification-cpv',
+  'total-value',
+  'deadline',
+  'deadline-receipt-tender-date-lot',
+  'deadline-receipt-tender-time-lot',
+  'form-type',
+  'notice-type',
+  'publication-date',
+],
     ],
     page: 1,
     limit,
@@ -373,7 +397,14 @@ function mapNotices(notices) {
 
     const deadline =
       extractDeadline(notice);
+    const formType =
+      extractFormType(notice);
+    const normalizedFormType =
+  String(formType ?? '').toLowerCase();
 
+if (normalizedFormType.includes('result')) {
+  continue;
+}
     const publishedAt =
       extractPublicationDate(notice) ??
       new Date().toISOString();
